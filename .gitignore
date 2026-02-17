@@ -1,0 +1,25 @@
+# extracted frames
+frames/
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# node
+node_modules/
+pnpm-lock.yaml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# build artifacts
+contact-sheet.jpg
+*.tmp
+
+# source videos (too large for git)
+*.mp4
+*.mov
+*.webm

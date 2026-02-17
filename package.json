@@ -1,0 +1,9 @@
+{
+  "name": "gazeportrait",
+  "version": "0.1.0",
+  "description": "cursor-tracking portrait from a sprite atlas",
+  "license": "MIT",
+  "scripts": {
+    "dev": "npx serve example"
+  }
+}

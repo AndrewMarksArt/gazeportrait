@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>gaze portrait</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body { background: #f9f8f6; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; font-family: monospace; }
+  canvas#c { image-rendering: pixelated; width: 320px; height: 320px; position: relative; z-index: 1; }
+  .deadzone { position: fixed; top: 0; left: 0; right: 0; height: 40vh; pointer-events: none; z-index: 0; background: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.025) 10px, rgba(0,0,0,0.025) 20px); }
+  .deadzone-label { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); font-size: 9px; color: #c8c7c5; letter-spacing: 0.05em; white-space: nowrap; }
+
+  /* debug overlay — toggle with ?debug in URL */
+  .debug { width: 320px; margin-top: 16px; }
+  .debug-bar { position: relative; height: 32px; border-radius: 4px; overflow: hidden; border: 1px solid #ccc; }
+  .debug-bar-bg { display: flex; height: 100%; }
+  .debug-cell { flex: 1; border-right: 1px solid rgba(0,0,0,0.06); transition: opacity 0.1s; }
+  .debug-cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: #e33; pointer-events: none; transition: left 0.05s; }
+  .debug-info { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; color: #999; }
+  .debug-grid { display: grid; gap: 1px; margin-top: 10px; background: #e8e7e5; border-radius: 4px; overflow: hidden; }
+  .debug-grid-cell { background: #f9f8f6; aspect-ratio: 1; transition: outline 0.1s; }
+  .debug-grid-cell.active { outline: 2px solid #e33; outline-offset: -2px; z-index: 1; }
+  .debug-grid-cell.covered { background: #eee; }
+  .debug-axis { display: flex; justify-content: space-between; margin-top: 12px; font-size: 10px; color: #bbb; }
+  .debug-axis-label { text-align: center; }
+  .debug-zone { position: relative; height: 8px; margin-top: 8px; border-radius: 4px; overflow: hidden; background: #e8e7e5; }
+  .debug-zone-fill { position: absolute; top: 0; bottom: 0; background: #d4d3d1; border-radius: 4px; }
+  .debug-zone-label { display: flex; justify-content: space-between; margin-top: 2px; font-size: 9px; color: #bbb; }
+</style>
+</head>
+<body>
+<div class="deadzone" id="deadzone"><span class="deadzone-label">upper hemisphere — no vertical tracking</span></div>
+<canvas id="c"></canvas>
+<div class="debug" id="debug">
+  <!-- cursor-to-frame bar -->
+  <div class="debug-bar" id="bar">
+    <div class="debug-bar-bg" id="bar-cells"></div>
+    <div class="debug-cursor" id="bar-cursor"></div>
+  </div>
+  <div class="debug-info">
+    <span id="info-frame">frame: 24</span>
+    <span id="info-pos">cursor: 0.50</span>
+  </div>
+
+  <!-- vertical axis indicator -->
+  <div class="debug-zone" style="margin-top: 12px;">
+    <div class="debug-zone-fill" style="left: 0; right: 0; background: #ccc;"></div>
+  </div>
+  <div class="debug-zone-label">
+    <span>horizontal only — vertical has no effect</span>
+  </div>
+
+  <!-- atlas grid minimap -->
+  <div class="debug-grid" id="grid" style="margin-top: 12px;"></div>
+  <div class="debug-axis">
+    <span>frame 0</span>
+    <span class="debug-axis-label">atlas grid</span>
+    <span>frame <span id="total-label"></span></span>
+  </div>
+</div>
+
+<script>
+// ── config ──────────────────────────────────────────
+const ATLAS_SRC = "atlas.jpg";
+const COLS      = 7;
+const ROWS      = 7;
+const FRAME_W   = 256;
+const FRAME_H   = 256;
+const INVERT    = false;
+// ────────────────────────────────────────────────────
+
+const DEBUG = new URLSearchParams(location.search).has("debug");
+const TOTAL = COLS * ROWS;
+
+const canvas = document.getElementById("c");
+const ctx = canvas.getContext("2d");
+canvas.width = FRAME_W;
+canvas.height = FRAME_H;
+ctx.imageSmoothingEnabled = false;
+
+let mouse = 0.5;
+let smooth = 0.5;
+let lastIdx = -1;
+
+// ── debug setup ─────────────────────────────────────
+{
+  document.getElementById("total-label").textContent = TOTAL - 1;
+
+  // build bar cells
+  const barCells = document.getElementById("bar-cells");
+  for (let i = 0; i < TOTAL; i++) {
+    const el = document.createElement("div");
+    el.className = "debug-cell";
+    el.style.background = `hsl(${(i / TOTAL) * 240}, 40%, 85%)`;
+    barCells.appendChild(el);
+  }
+
+  // build grid minimap
+  const grid = document.getElementById("grid");
+  grid.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
+  for (let i = 0; i < TOTAL; i++) {
+    const el = document.createElement("div");
+    el.className = "debug-grid-cell covered";
+    el.title = `frame ${i} (col ${i % COLS}, row ${Math.floor(i / COLS)})`;
+    grid.appendChild(el);
+  }
+}
+
+function updateDebug(idx, cursorVal) {
+
+  // bar cursor position
+  const bar = document.getElementById("bar");
+  const cursor = document.getElementById("bar-cursor");
+  cursor.style.left = (cursorVal * bar.offsetWidth) + "px";
+
+  // highlight current cell in bar
+  const cells = document.getElementById("bar-cells").children;
+  for (let i = 0; i < cells.length; i++) {
+    cells[i].style.opacity = i === idx ? "1" : "0.4";
+  }
+
+  // info text
+  document.getElementById("info-frame").textContent = `frame: ${idx} (${idx % COLS},${Math.floor(idx / COLS)})`;
+  document.getElementById("info-pos").textContent = `cursor: ${cursorVal.toFixed(3)}`;
+
+  // grid highlight
+  const gridCells = document.getElementById("grid").children;
+  for (let i = 0; i < gridCells.length; i++) {
+    gridCells[i].classList.toggle("active", i === idx);
+  }
+}
+// ─────────────────────────────────────────────────────
+
+const atlas = new Image();
+atlas.src = ATLAS_SRC;
+
+atlas.onload = () => {
+  const t0 = performance.now();
+  const mid = Math.floor(TOTAL / 2);
+  drawFrame(mid);
+  lastIdx = mid;
+  updateDebug(mid, 0.5);
+
+  function tick(now) {
+    smooth += (mouse - smooth) * 0.35;
+    const drift = Math.sin((now - t0) / 3000) * 0.015;
+    const val = Math.max(0, Math.min(1, smooth + drift));
+    const idx = Math.round(val * (TOTAL - 1));
+
+    if (idx !== lastIdx) {
+      lastIdx = idx;
+      drawFrame(idx);
+    }
+    updateDebug(idx, val);
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+};
+
+function drawFrame(idx) {
+  const col = idx % COLS;
+  const row = Math.floor(idx / COLS);
+  ctx.drawImage(atlas, col * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H, 0, 0, FRAME_W, FRAME_H);
+}
+
+const remap = (px) => { const v = px / innerWidth; return INVERT ? 1 - v : v; };
+addEventListener("mousemove", (e) => { mouse = remap(e.clientX); }, { passive: true });
+addEventListener("touchmove", (e) => { if (e.touches[0]) mouse = remap(e.touches[0].clientX); }, { passive: true });
+addEventListener("mouseleave", () => { mouse = 0.5; }, { passive: true });
+</script>
+</body>
+</html>

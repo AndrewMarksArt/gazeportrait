@@ -1,173 +1,459 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>gaze portrait</title>
-<style>
-  * { margin: 0; box-sizing: border-box; }
-  body { background: #f9f8f6; display: flex; flex-direction: column; justify-content: center; align-items: center; min-height: 100vh; font-family: monospace; }
-  canvas#c { image-rendering: pixelated; width: 320px; height: 320px; position: relative; z-index: 1; }
-  .deadzone { position: fixed; top: 0; left: 0; right: 0; height: 40vh; pointer-events: none; z-index: 0; background: repeating-linear-gradient(45deg, transparent, transparent 10px, rgba(0,0,0,0.025) 10px, rgba(0,0,0,0.025) 20px); }
-  .deadzone-label { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); font-size: 9px; color: #c8c7c5; letter-spacing: 0.05em; white-space: nowrap; }
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gaze Portrait - Schematic</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist+Mono:wght@100..900&display=swap" rel="stylesheet">
+  <style>
+    /* -------------------------------------------------------------------------- */
+    /* 1. Global & Background                                                     */
+    /* -------------------------------------------------------------------------- */
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100vw;
+      height: 100vh;
+      overflow: hidden;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      background-color: #EDEDED;
 
-  /* debug overlay — toggle with ?debug in URL */
-  .debug { width: 320px; margin-top: 16px; }
-  .debug-bar { position: relative; height: 32px; border-radius: 4px; overflow: hidden; border: 1px solid #ccc; }
-  .debug-bar-bg { display: flex; height: 100%; }
-  .debug-cell { flex: 1; border-right: 1px solid rgba(0,0,0,0.06); transition: opacity 0.1s; }
-  .debug-cursor { position: absolute; top: 0; bottom: 0; width: 2px; background: #e33; pointer-events: none; transition: left 0.05s; }
-  .debug-info { display: flex; justify-content: space-between; margin-top: 6px; font-size: 10px; color: #999; }
-  .debug-grid { display: grid; gap: 1px; margin-top: 10px; background: #e8e7e5; border-radius: 4px; overflow: hidden; }
-  .debug-grid-cell { background: #f9f8f6; aspect-ratio: 1; transition: outline 0.1s; }
-  .debug-grid-cell.active { outline: 2px solid #e33; outline-offset: -2px; z-index: 1; }
-  .debug-grid-cell.covered { background: #eee; }
-  .debug-axis { display: flex; justify-content: space-between; margin-top: 12px; font-size: 10px; color: #bbb; }
-  .debug-axis-label { text-align: center; }
-  .debug-zone { position: relative; height: 8px; margin-top: 8px; border-radius: 4px; overflow: hidden; background: #e8e7e5; }
-  .debug-zone-fill { position: absolute; top: 0; bottom: 0; background: #d4d3d1; border-radius: 4px; }
-  .debug-zone-label { display: flex; justify-content: space-between; margin-top: 2px; font-size: 9px; color: #bbb; }
-</style>
-</head>
-<body>
-<div class="deadzone" id="deadzone"><span class="deadzone-label">upper hemisphere — no vertical tracking</span></div>
-<canvas id="c"></canvas>
-<div class="debug" id="debug">
-  <!-- cursor-to-frame bar -->
-  <div class="debug-bar" id="bar">
-    <div class="debug-bar-bg" id="bar-cells"></div>
-    <div class="debug-cursor" id="bar-cursor"></div>
-  </div>
-  <div class="debug-info">
-    <span id="info-frame">frame: 24</span>
-    <span id="info-pos">cursor: 0.50</span>
-  </div>
+      /* Robust grid lines that won't seam from odd viewport widths */
+      background-size: 56.57px 56.57px;
+      /* roughly 40px diagonal distance */
+      background-image: linear-gradient(-45deg,
+          #EDEDED 25%,
+          #E7E7E7 25%,
+          #E7E7E7 50%,
+          #EDEDED 50%,
+          #EDEDED 75%,
+          #E7E7E7 75%,
+          #E7E7E7 100%);
 
-  <!-- vertical axis indicator -->
-  <div class="debug-zone" style="margin-top: 12px;">
-    <div class="debug-zone-fill" style="left: 0; right: 0; background: #ccc;"></div>
-  </div>
-  <div class="debug-zone-label">
-    <span>horizontal only — vertical has no effect</span>
-  </div>
-
-  <!-- atlas grid minimap -->
-  <div class="debug-grid" id="grid" style="margin-top: 12px;"></div>
-  <div class="debug-axis">
-    <span>frame 0</span>
-    <span class="debug-axis-label">atlas grid</span>
-    <span>frame <span id="total-label"></span></span>
-  </div>
-</div>
-
-<script>
-// ── config ──────────────────────────────────────────
-const ATLAS_SRC = "atlas.jpg";
-const COLS      = 7;
-const ROWS      = 7;
-const FRAME_W   = 256;
-const FRAME_H   = 256;
-const INVERT    = false;
-// ────────────────────────────────────────────────────
-
-const DEBUG = new URLSearchParams(location.search).has("debug");
-const TOTAL = COLS * ROWS;
-
-const canvas = document.getElementById("c");
-const ctx = canvas.getContext("2d");
-canvas.width = FRAME_W;
-canvas.height = FRAME_H;
-ctx.imageSmoothingEnabled = false;
-
-let mouse = 0.5;
-let smooth = 0.5;
-let lastIdx = -1;
-
-// ── debug setup ─────────────────────────────────────
-{
-  document.getElementById("total-label").textContent = TOTAL - 1;
-
-  // build bar cells
-  const barCells = document.getElementById("bar-cells");
-  for (let i = 0; i < TOTAL; i++) {
-    const el = document.createElement("div");
-    el.className = "debug-cell";
-    el.style.background = `hsl(${(i / TOTAL) * 240}, 40%, 85%)`;
-    barCells.appendChild(el);
-  }
-
-  // build grid minimap
-  const grid = document.getElementById("grid");
-  grid.style.gridTemplateColumns = `repeat(${COLS}, 1fr)`;
-  for (let i = 0; i < TOTAL; i++) {
-    const el = document.createElement("div");
-    el.className = "debug-grid-cell covered";
-    el.title = `frame ${i} (col ${i % COLS}, row ${Math.floor(i / COLS)})`;
-    grid.appendChild(el);
-  }
-}
-
-function updateDebug(idx, cursorVal) {
-
-  // bar cursor position
-  const bar = document.getElementById("bar");
-  const cursor = document.getElementById("bar-cursor");
-  cursor.style.left = (cursorVal * bar.offsetWidth) + "px";
-
-  // highlight current cell in bar
-  const cells = document.getElementById("bar-cells").children;
-  for (let i = 0; i < cells.length; i++) {
-    cells[i].style.opacity = i === idx ? "1" : "0.4";
-  }
-
-  // info text
-  document.getElementById("info-frame").textContent = `frame: ${idx} (${idx % COLS},${Math.floor(idx / COLS)})`;
-  document.getElementById("info-pos").textContent = `cursor: ${cursorVal.toFixed(3)}`;
-
-  // grid highlight
-  const gridCells = document.getElementById("grid").children;
-  for (let i = 0; i < gridCells.length; i++) {
-    gridCells[i].classList.toggle("active", i === idx);
-  }
-}
-// ─────────────────────────────────────────────────────
-
-const atlas = new Image();
-atlas.src = ATLAS_SRC;
-
-atlas.onload = () => {
-  const t0 = performance.now();
-  const mid = Math.floor(TOTAL / 2);
-  drawFrame(mid);
-  lastIdx = mid;
-  updateDebug(mid, 0.5);
-
-  function tick(now) {
-    smooth += (mouse - smooth) * 0.35;
-    const drift = Math.sin((now - t0) / 3000) * 0.015;
-    const val = Math.max(0, Math.min(1, smooth + drift));
-    const idx = Math.round(val * (TOTAL - 1));
-
-    if (idx !== lastIdx) {
-      lastIdx = idx;
-      drawFrame(idx);
+      font-family: 'Geist Mono', monospace;
+      /* Custom [ + ] cursor using an inline SVG. Thinner stroke, wider spacing. */
+      cursor: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><path d='M 10 6 L 6 6 L 6 26 L 10 26' fill='none' stroke='%23CD3F01' stroke-width='1.5'/><path d='M 22 6 L 26 6 L 26 26 L 22 26' fill='none' stroke='%23CD3F01' stroke-width='1.5'/><path d='M 16 11 L 16 21 M 11 16 L 21 16' fill='none' stroke='%23CD3F01' stroke-width='1.5'/></svg>") 16 16, crosshair;
     }
-    updateDebug(idx, val);
-    requestAnimationFrame(tick);
-  }
-  requestAnimationFrame(tick);
-};
 
-function drawFrame(idx) {
-  const col = idx % COLS;
-  const row = Math.floor(idx / COLS);
-  ctx.drawImage(atlas, col * FRAME_W, row * FRAME_H, FRAME_W, FRAME_H, 0, 0, FRAME_W, FRAME_H);
-}
+    /* -------------------------------------------------------------------------- */
+    /* 2. Scaler - ensures the entire UI fits on smaller laptops                  */
+    /* -------------------------------------------------------------------------- */
+    #scaler {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      /* Dynamic JS scale applied here depending on window height */
+      transform: scale(1);
+      transform-origin: center center;
+    }
 
-const remap = (px) => { const v = px / innerWidth; return INVERT ? 1 - v : v; };
-addEventListener("mousemove", (e) => { mouse = remap(e.clientX); }, { passive: true });
-addEventListener("touchmove", (e) => { if (e.touches[0]) mouse = remap(e.touches[0].clientX); }, { passive: true });
-addEventListener("mouseleave", () => { mouse = 0.5; }, { passive: true });
-</script>
+    /* -------------------------------------------------------------------------- */
+    /* 3. The Core Card Structure                                                 */
+    /* -------------------------------------------------------------------------- */
+    .card {
+      position: relative;
+      /* Max 450px, otherwise span the window with 20px padding on each side */
+      width: calc(100vw - 40px);
+      max-width: 450px;
+      display: flex;
+      flex-direction: column;
+      flex-shrink: 0;
+      z-index: 10;
+    }
+
+    .block {
+      background: #fff;
+      position: relative;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* 4. Infinite Grid Lines                                                     */
+    /* -------------------------------------------------------------------------- */
+    /* Horizontal lines are fixed size 200vw, centered. 
+       This prevents flexbox scroll bugs from absolute bounds blowing up */
+    .hline {
+      position: absolute;
+      width: 200vw;
+      height: 1px;
+      left: 50%;
+      transform: translateX(-50%);
+      background-color: #999;
+      z-index: 5;
+    }
+
+    /* Vertical lines are fixed size 200vh, centered vertically */
+    .vline {
+      position: absolute;
+      width: 1px;
+      height: 200vh;
+      top: 50%;
+      transform: translateY(-50%);
+      background-color: #999;
+      z-index: 5;
+    }
+
+    .v-left {
+      left: 0;
+    }
+
+    .v-right {
+      right: 0;
+    }
+
+    /* A boundary is just a horionztal cut across the card containing an hline & crosses */
+    .boundary {
+      position: absolute;
+      left: 0;
+      right: 0;
+      height: 0;
+      z-index: 10;
+    }
+
+    .b-top {
+      top: 0;
+    }
+
+    .b-bottom {
+      bottom: 0;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* 5. Precise Pixel-Perfect Crosshairs                                        */
+    /* -------------------------------------------------------------------------- */
+    .cross {
+      position: absolute;
+      width: 11px;
+      height: 11px;
+      /* The very center of this element is now placed EXACTLY at the corner coordinates */
+      top: 0;
+      transform: translate(-50%, -50%);
+      z-index: 15;
+    }
+
+    /* Wait, the crosses should be drawn with sub-elements: */
+    .cross::before {
+      content: '';
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      left: 4px;
+      /* adjusted for 2px width */
+      width: 2px;
+      background-color: #000;
+    }
+
+    .cross::after {
+      content: '';
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 4px;
+      /* adjusted for 2px width */
+      height: 2px;
+      background-color: #000;
+    }
+
+    .cross-left {
+      left: 0;
+    }
+
+    .cross-right {
+      left: 100%;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* 6. Block Content: Header                                                   */
+    /* -------------------------------------------------------------------------- */
+    .header-block {
+      /* Increased side padding to 24px */
+      padding: 12px 24px;
+    }
+
+    .header-text {
+      font-size: 11px;
+      /* Shrunk slightly to prevent wrapping */
+      letter-spacing: -0.02em;
+      color: #000;
+      line-height: 1;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* 7. Block Content: Canvas                                                   */
+    /* -------------------------------------------------------------------------- */
+    .canvas-block {
+      width: 100%;
+      /* Original char 404x404. Dropped 2px to remove white edge gap. */
+      aspect-ratio: 404 / 402;
+      height: auto;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      overflow: hidden;
+      /* Stops character dipping over the lines */
+    }
+
+    canvas#c {
+      width: 100%;
+      height: auto;
+      aspect-ratio: 1 / 1;
+      image-rendering: auto;
+      display: block;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* 8. Block Content: Footer                                                   */
+    /* -------------------------------------------------------------------------- */
+    .footer-block {
+      /* Increased bottom padding to 32px, and side padding to 40px for breathing room */
+      padding: 20px 40px 32px 40px;
+    }
+
+    .headline {
+      font-size: 20px;
+      letter-spacing: -0.02em;
+      color: #CD3F01;
+      margin-bottom: 12px;
+    }
+
+    .subhead {
+      padding-left: 24px;
+      /* Decreased from 16px to 12px */
+      font-size: 12px;
+      letter-spacing: -0.02em;
+      color: #333E32;
+    }
+
+    .status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 4px;
+    }
+
+    .dots {
+      flex-grow: 1;
+      border-bottom: 2px dotted #aaa;
+      margin: 0 8px;
+    }
+
+    .val {
+      color: #000;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* 9. Animations                                                              */
+    /* -------------------------------------------------------------------------- */
+    @keyframes blink {
+
+      0%,
+      100% {
+        opacity: 1;
+      }
+
+      50% {
+        opacity: 0;
+      }
+    }
+
+    .cursor-blink {
+      animation: blink 1s step-end infinite;
+      display: inline-block;
+      /* Match color to the headline text since it might not inherit perfectly if we change things later */
+      color: #CD3F01;
+      /* Make sure brackets render mono and are slightly padded visually from the text */
+      margin-left: 5px;
+    }
+
+    /* -------------------------------------------------------------------------- */
+    /* 10. Responsive Breakpoints                                                 */
+    /* -------------------------------------------------------------------------- */
+    @media (max-width: 480px) {
+      .header-block {
+        padding: 10px 15px;
+      }
+
+      .header-text {
+        font-size: 8.5px;
+      }
+
+      .footer-block {
+        padding: 15px 20px 24px 20px;
+      }
+
+      .headline {
+        font-size: 16px;
+        margin-bottom: 8px;
+      }
+
+      .subhead {
+        padding-left: 12px;
+        font-size: 10px;
+      }
+    }
+  </style>
+</head>
+
+<body>
+
+  <!-- Wraps the layout so JS can scale it down if viewport is tiny -->
+  <div id="scaler">
+
+    <main class="card">
+
+      <!-- Infinite Vertical Grid Lines for the left/right edge -->
+      <div class="vline v-left"></div>
+      <div class="vline v-right"></div>
+
+      <!-- ================= HEADER ================= -->
+      <header class="block header-block">
+
+        <!-- Top Boundary Line -->
+        <div class="boundary b-top">
+          <div class="hline"></div>
+          <div class="cross cross-left"></div>
+          <div class="cross cross-right"></div>
+        </div>
+
+        <div class="header-text">UID: AM-9310-TSR // TOP_SECRET // LOC: 36.5298° N, 87.3595° W</div>
+
+        <!-- Bottom Boundary Line (Separates header from canvas) -->
+        <div class="boundary b-bottom">
+          <div class="hline"></div>
+          <div class="cross cross-left"></div>
+          <div class="cross cross-right"></div>
+        </div>
+      </header>
+
+      <!-- ================= BASE CANVAS ================= -->
+      <div class="block canvas-block">
+        <canvas id="c"></canvas>
+      </div>
+
+      <!-- ================= FOOTER ================= -->
+      <footer class="block footer-block">
+
+        <!-- Top Boundary Line (Separates footer from canvas) -->
+        <div class="boundary b-top">
+          <div class="hline"></div>
+          <div class="cross cross-left"></div>
+          <div class="cross cross-right"></div>
+        </div>
+
+        <div class="headline">// INITIALIZING...<span class="cursor-blink">_</span></div>
+
+        <div class="subhead">
+          <div class="status-row">
+            <span>STATUS:</span>
+            <span class="dots"></span>
+            <span class="val">Coming Soon</span>
+          </div>
+          <div class="status-row">
+            <span>LAST SYNC:</span>
+            <span class="dots"></span>
+            <span class="val">[ 2.26.2026 ]</span>
+          </div>
+        </div>
+
+        <!-- Bottom Boundary Line -->
+        <div class="boundary b-bottom">
+          <div class="hline"></div>
+          <div class="cross cross-left"></div>
+          <div class="cross cross-right"></div>
+        </div>
+      </footer>
+
+    </main>
+
+  </div>
+
+  <script>
+    // --- Scale the layout down to fit small vertical screens ---
+    function fitCardToScreen() {
+      const scaler = document.getElementById('scaler');
+      const card = document.querySelector('.card');
+      const cardHeight = card ? card.offsetHeight : 600;
+      // Leave some padding top & bottom
+      const availableHeight = window.innerHeight - 40;
+      let scale = 1;
+
+      if (cardHeight > availableHeight) {
+        scale = availableHeight / cardHeight;
+      }
+
+      scaler.style.transform = `scale(${scale})`;
+    }
+    window.addEventListener('resize', fitCardToScreen);
+    fitCardToScreen();
+
+    // --- Canvas Drawing Logic ---
+    const ATLAS_SRC = "atlas.jpg";
+    const COLS = 9;
+    const ROWS = 9;
+    const TOTAL = COLS * ROWS;
+    const FRAME_W = 256;
+    const FRAME_H = 256;
+    // Mouse X maps normally 1:1 since card is centered
+    const INVERT = false;
+
+    const canvas = document.getElementById("c");
+    const ctx = canvas.getContext("2d");
+
+    // Internal resolution is 256x256, scaled via CSS to 404x404
+    canvas.width = FRAME_W;
+    canvas.height = FRAME_H;
+
+    let mouse = 0.5;
+    let smooth = 0.5;
+    let lastIdx = -1;
+
+    const atlas = new Image();
+    atlas.src = ATLAS_SRC;
+
+    atlas.onload = () => {
+      const t0 = performance.now();
+
+      function tick(now) {
+        smooth += (mouse - smooth) * 0.35;
+        const drift = Math.sin((now - t0) / 3000) * 0.015;
+        const val = Math.max(0, Math.min(1, smooth + drift));
+        const idx = Math.round(val * (TOTAL - 1));
+
+        if (idx !== lastIdx) {
+          lastIdx = idx;
+          const col = idx % COLS;
+          const row = Math.floor(idx / COLS);
+
+          ctx.clearRect(0, 0, FRAME_W, FRAME_H);
+          ctx.drawImage(
+            atlas,
+            col * FRAME_W + 1, row * FRAME_H + 1, FRAME_W - 2, FRAME_H - 2,
+            1, 1, FRAME_W - 2, FRAME_H - 2
+          );
+        }
+
+        requestAnimationFrame(tick);
+      }
+      requestAnimationFrame(tick);
+    };
+
+    const remap = (px) => { const v = px / innerWidth; return INVERT ? 1 - v : v; };
+
+    addEventListener("mousemove", (e) => {
+      mouse = remap(e.clientX);
+    }, { passive: true });
+
+    addEventListener("touchmove", (e) => {
+      if (e.touches[0]) {
+        mouse = remap(e.touches[0].clientX);
+      }
+    }, { passive: true });
+
+  </script>
 </body>
+
 </html>

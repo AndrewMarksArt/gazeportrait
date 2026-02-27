@@ -344,7 +344,7 @@
           <div class="cross cross-right"></div>
         </div>
 
-        <div class="headline">// INITIALIZING...<span class="cursor-blink">_</span></div>
+        <div class="headline"><span id="typewriter"></span><span class="cursor-blink">_</span></div>
 
         <div class="subhead">
           <div class="status-row">
@@ -452,6 +452,52 @@
         mouse = remap(e.touches[0].clientX);
       }
     }, { passive: true });
+
+    // --- Looping Typewriter Effect ---
+    const twEl = document.getElementById('typewriter');
+    const fullText = "// INITIALIZING...";
+    let twIdx = 0;
+    let twIsDeleting = false;
+    let twLastTime = 0;
+    // Tweak to change speed (ms per character)
+    const TYPE_SPEED = 100;
+    const DELETE_SPEED = 80;
+    const PAUSE_END = 3000;
+    const PAUSE_START = 500;
+
+    function typewriterTick(now) {
+      if (!twLastTime) twLastTime = now;
+      let delay = twIsDeleting ? DELETE_SPEED : TYPE_SPEED;
+
+      // Add pauses at the end of fully typed or fully deleted states
+      if (!twIsDeleting && twIdx === fullText.length) {
+        delay = PAUSE_END;
+      } else if (twIsDeleting && twIdx === 0) {
+        delay = PAUSE_START;
+      }
+
+      if (now - twLastTime > delay) {
+        if (!twIsDeleting) {
+          if (twIdx >= fullText.length) {
+            twIsDeleting = true;
+          } else {
+            twIdx++;
+          }
+        } else {
+          if (twIdx <= 0) {
+            twIsDeleting = false;
+          } else {
+            twIdx--;
+          }
+        }
+
+        twEl.textContent = fullText.substring(0, twIdx);
+        twLastTime = now;
+      }
+
+      requestAnimationFrame(typewriterTick);
+    }
+    requestAnimationFrame(typewriterTick);
 
   </script>
 </body>
